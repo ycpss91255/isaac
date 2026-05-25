@@ -20,6 +20,7 @@ from isaacsim import SimulationApp
 
 app = SimulationApp({"headless": True})
 
+import omni.timeline  # noqa: E402
 import omni.usd  # noqa: E402
 from omni.isaac.dynamic_control import _dynamic_control as dc  # noqa: E402
 from pxr import PhysxSchema, Usd, UsdPhysics  # noqa: E402
@@ -91,14 +92,24 @@ def main():
         return 1
 
     stage = ctx.get_stage()
-    print("[smoke] stage opened, articulation info:", flush=True)
+    print("[smoke] stage opened, dumping prim tree + articulation info:", flush=True)
+    base_prim = stage.GetPrimAtPath(TARGET_PRIM)
+    if base_prim.IsValid():
+        apis = base_prim.GetAppliedSchemas()
+        print(f"  [info] {TARGET_PRIM} applied schemas: {list(apis)}", flush=True)
+        kin_attr = base_prim.GetAttribute("physics:kinematicEnabled")
+        if kin_attr.IsValid():
+            print(f"  [info] physics:kinematicEnabled = {kin_attr.Get()}", flush=True)
+        else:
+            print(f"  [info] physics:kinematicEnabled attr not found", flush=True)
+    else:
+        print(f"  [info] {TARGET_PRIM} NOT VALID in stage", flush=True)
     _dump_articulation_info(stage)
 
     if usd_path == FALLBACK_PATH:
         if not _apply_l2_override(stage):
             return 1
 
-    import omni.timeline  # noqa: E402
     tl = omni.timeline.get_timeline_interface()
     tl.set_end_time(1.0e9)
     tl.play()
@@ -115,8 +126,12 @@ def main():
     target = dc.Transform()
     target.p = TARGET_POS
     target.r = (0.0, 0.0, 0.0, 1.0)
-    iface.set_kinematic_target(handle, target)
-    print(f"[smoke] set_kinematic_target({TARGET_POS}) called", flush=True)
+    if hasattr(iface, "set_kinematic_target"):
+        iface.set_kinematic_target(handle, target)
+        print(f"[smoke] set_kinematic_target({TARGET_POS}) called", flush=True)
+    else:
+        iface.set_rigid_body_pose(handle, target)
+        print(f"[smoke] set_rigid_body_pose({TARGET_POS}) called (fallback)", flush=True)
 
     for tick in range(SETTLE_TICKS):
         app.update()
