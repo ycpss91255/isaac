@@ -152,23 +152,33 @@ def _setup_lidar(cfg, stage):
     _set_xform_pose(mount_prim, cfg["mount"]["pose"])
 
     from isaacsim.core.utils.extensions import enable_extension
+    enable_extension("isaacsim.core.nodes")
     enable_extension("isaacsim.ros2.bridge")
     enable_extension("isaacsim.sensors.rtx")
 
     import omni.kit.commands
-    lidar_path = f"{mount_path}/lidar"
+    lidar_name = "lidar"
+    lidar_path = f"{mount_path}/{lidar_name}"
 
+    # IsaacSensorCreateRtxLidar takes (path, parent, config) separately.
+    # `path` is the new prim's local name; `parent` is the absolute
+    # parent prim path. `config` is the NVIDIA profile name (no path,
+    # no .json extension) -- it's looked up in
+    # /isaac-sim/exts/isaacsim.sensors.rtx/data/lidar_configs/.
     if sensor["profile"] == "custom":
+        # User-supplied JSON config (full path on disk).
         omni.kit.commands.execute(
             "IsaacSensorCreateRtxLidar",
-            path=lidar_path,
-            config_file_name="",
+            path=f"/{lidar_name}",
+            parent=mount_path,
+            config=sensor["config_path"],
         )
     else:
         omni.kit.commands.execute(
             "IsaacSensorCreateRtxLidar",
-            path=lidar_path,
-            config_file_name=sensor["profile"],
+            path=f"/{lidar_name}",
+            parent=mount_path,
+            config=sensor["profile"],
         )
 
     import omni.graph.core as og
@@ -177,7 +187,7 @@ def _setup_lidar(cfg, stage):
     graph_path = f"/World/SensorGraphs/{frame_id_prefix}_lidar"
     nodes = [
         ("OnTick", "omni.graph.action.OnPlaybackTick"),
-        ("SimFrame", "isaacsim.core.nodes.IsaacRunOneSimulationFrame"),
+        ("SimFrame", "isaacsim.core.nodes.OgnIsaacRunOneSimulationFrame"),
         ("RenderProduct", "isaacsim.core.nodes.IsaacCreateRenderProduct"),
         ("LidarHelper", "isaacsim.ros2.bridge.ROS2RtxLidarHelper"),
     ]
@@ -189,7 +199,7 @@ def _setup_lidar(cfg, stage):
     ]
     connects = [
         ("OnTick.outputs:tick", "SimFrame.inputs:execIn"),
-        ("SimFrame.outputs:execOut", "RenderProduct.inputs:execIn"),
+        ("SimFrame.outputs:step", "RenderProduct.inputs:execIn"),
         ("RenderProduct.outputs:execOut", "LidarHelper.inputs:execIn"),
         ("RenderProduct.outputs:renderProductPath", "LidarHelper.inputs:renderProductPath"),
     ]
