@@ -1,8 +1,10 @@
 name: Unit Tests
 
-# Per ADR-0011: Unit tests run on GitHub-hosted runners (free, no GPU
-# required). Tests under test/unit/ are pure Python (pytest + pyyaml),
-# no Isaac Sim dependency.
+# Per ADR-0011 + ADR-0012: workspace owns unit tests only. Smoke and
+# integration tests live in ycpss91255-docker/isaac (env-dependent,
+# run in devel-test container on self-hosted GPU). Unit tests under
+# test/unit/pytest/ are pure Python (pytest + pyyaml), no Isaac Sim
+# dependency, so they run on free GitHub-hosted runners.
 
 on:
   push:
@@ -13,7 +15,7 @@ on:
 
 jobs:
   unit-test:
-    name: pytest test/unit/
+    name: pytest test/unit/pytest/
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -32,18 +34,22 @@ jobs:
       - name: Discover and report tests
         run: |
           set -euo pipefail
-          if [ ! -d test/unit ]; then
-            echo "no test/unit/ directory — skipping (will become required once test files land)"
+          # Per ycpss91255-docker/base#473 (Layout B: test/<category>/<tool>/),
+          # Python unit tests live under test/unit/pytest/. Other-tool unit
+          # tests would live in sibling subdirs (test/unit/bats/, etc.) and
+          # are exercised by their own runners.
+          if [ ! -d test/unit/pytest ]; then
+            echo "no test/unit/pytest/ directory — skipping (will become required once test files land)"
             exit 0
           fi
-          count=$(find test/unit -name 'test_*.py' | wc -l)
-          echo "test/unit/ contains $count test files"
+          count=$(find test/unit/pytest -name 'test_*.py' | wc -l)
+          echo "test/unit/pytest/ contains $count test files"
 
       - name: Run pytest
         run: |
           set -euo pipefail
-          if [ ! -d test/unit ]; then
-            echo "no test/unit/ directory — skip"
+          if [ ! -d test/unit/pytest ]; then
+            echo "no test/unit/pytest/ directory — skip"
             exit 0
           fi
-          python -m pytest test/unit/ -v --tb=short
+          python -m pytest test/unit/pytest/ -v --tb=short
