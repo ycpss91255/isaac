@@ -1,0 +1,61 @@
+name: Smoke Tests
+
+# Per ADR-0011: Smoke tests boot Isaac Sim Kit (headless) and exercise
+# real Kit + ROS 2 bridge surfaces. Requires NVIDIA GPU at runtime
+# (Kit CUDA/Vulkan init refuses to start without one), so we route to
+# the self-hosted runner labeled 'gpu'.
+#
+# Outside-collaborator PRs do NOT auto-trigger: org-level setting
+# "Approval for outside collaborators: All outside collaborators" gates
+# the workflow until the maintainer clicks "Approve and run".
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke-test:
+    name: pytest test/smoke/ (Isaac Sim)
+    runs-on: [self-hosted, gpu]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve docker compose dir
+        id: docker
+        run: |
+          set -euo pipefail
+          if [ -d docker ] && [ -f docker/compose.yaml ]; then
+            echo "dir=docker" >> "${GITHUB_OUTPUT}"
+          else
+            echo "FAIL: cannot find docker/compose.yaml — repo layout changed?"
+            exit 1
+          fi
+
+      - name: Ensure devel-test image is available
+        working-directory: ${{ steps.docker.outputs.dir }}
+        run: |
+          set -euo pipefail
+          # build if not present (no-op if cached)
+          ./script/build.sh -t devel-test
+
+      - name: Run smoke tests inside devel-test container
+        working-directory: ${{ steps.docker.outputs.dir }}
+        run: |
+          set -euo pipefail
+          if [ ! -d ../test/smoke ]; then
+            echo "no test/smoke/ directory — skip"
+            exit 0
+          fi
+          ./script/exec.sh -t devel-test -T -- \
+            /isaac-sim/python.sh -m pytest test/smoke/ -v --tb=short
+
+      - name: Stop container
+        if: always()
+        working-directory: ${{ steps.docker.outputs.dir }}
+        run: |
+          ./script/stop.sh -t devel-test || true
