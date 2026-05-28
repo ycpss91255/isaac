@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "script"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "script"))
 import sensor_setup
 
 
