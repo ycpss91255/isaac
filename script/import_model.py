@@ -22,7 +22,9 @@ layer and textures/ are preserved.
 
 import argparse
 import os
+import re
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -149,14 +151,70 @@ def _write_root_composition(paths):
     print(f"  root composition created: {root_path}")
 
 
+_PACKAGE_URI_RE = re.compile(r'filename="package://([^/]+)/([^"]+)"')
+
+
+def _preprocess_urdf(urdf_path):
+    """Substitute package://<name>/<rel> URIs with absolute file paths.
+
+    Isaac Sim's URDF importer resolves package:// via ROS_PACKAGE_PATH,
+    which is not set in our container. The URDFs in this repo use names
+    like 'open_base' (underscore) but the directory is 'openbase' (no
+    underscore), so even ROS_PACKAGE_PATH wouldn't help.
+
+    Strategy: search for the referenced mesh file in <urdf_dir>/<rel>
+    first (most common layout), then <urdf_dir>/../<rel>. If found,
+    replace the URI with the absolute path. If not, leave unchanged
+    (importer will warn).
+
+    Returns a Path to a temporary URDF in /tmp; caller is responsible
+    for cleanup (or rely on /tmp being scratch).
+    """
+    urdf_dir = urdf_path.parent
+    content = urdf_path.read_text()
+    unresolved = []
+
+    def resolve(match):
+        rel = match.group(2)
+        candidates = [
+            urdf_dir / rel,
+            urdf_dir.parent / rel,
+        ]
+        for c in candidates:
+            if c.exists():
+                return f'filename="{c.resolve()}"'
+        unresolved.append(match.group(0))
+        return match.group(0)
+
+    new_content = _PACKAGE_URI_RE.sub(resolve, content)
+    if unresolved:
+        print(f"  warning: {len(unresolved)} package URI(s) unresolved, "
+              f"first: {unresolved[0]}", flush=True)
+
+    fd, tmp_path = tempfile.mkstemp(
+        suffix=".urdf", prefix=f"{urdf_path.stem}_resolved_"
+    )
+    os.close(fd)
+    tmp = Path(tmp_path)
+    tmp.write_text(new_content)
+    print(f"  preprocessed URDF: {tmp}", flush=True)
+    return tmp
+
+
 def _import_urdf(urdf_path, geometry_path, args):
-    """Run URDF import via Isaac Sim API. Must run inside container."""
+    """Run URDF import via Isaac Sim API. Must run inside container.
+
+    Preprocesses the URDF to resolve package:// URIs before passing to
+    the importer.
+    """
     from isaacsim import SimulationApp
 
     app = SimulationApp({"headless": True})
 
     import omni.kit.commands
     from isaacsim.asset.importer.urdf import _urdf as urdf_loader
+
+    resolved_urdf = _preprocess_urdf(urdf_path)
 
     config = urdf_loader.ImportConfig()
     config.merge_fixed_joints = not args.no_merge_fixed
@@ -169,29 +227,27 @@ def _import_urdf(urdf_path, geometry_path, args):
 
     status, robot = omni.kit.commands.execute(
         "URDFParseFile",
-        urdf_path=str(urdf_path),
+        urdf_path=str(resolved_urdf),
         import_config=config,
     )
     if not status:
-        print(f"error: URDF parse failed: {urdf_path}", file=sys.stderr)
-        app.close()
-        return False
+        print(f"error: URDF parse failed: {resolved_urdf}", file=sys.stderr, flush=True)
+        return False, app
 
     status, stage_path = omni.kit.commands.execute(
         "URDFImportRobot",
-        urdf_path=str(urdf_path),
+        urdf_path=str(resolved_urdf),
         urdf_robot=robot,
         dest_path=str(geometry_path),
         import_config=config,
     )
-    if not status:
-        print("error: URDF import failed", file=sys.stderr)
-        app.close()
-        return False
 
-    print(f"  geometry imported: {geometry_path} (stage_path={stage_path})")
-    app.close()
-    return True
+    # URDFImportRobot can return status=False on mesh resolution warnings
+    # while still producing a valid USD. Trust file existence as the
+    # authoritative signal. Do all post-import file work BEFORE
+    # app.close() because Kit shutdown can be abrupt on certain Isaac
+    # Sim builds (no traceback, just exits).
+    return geometry_path.exists(), app
 
 
 def _validate_output(paths):
@@ -218,21 +274,24 @@ def main():
     _check_existing(paths, args.force)
     _ensure_dirs(paths)
 
-    if not _import_urdf(paths["urdf"], paths["geometry"], args):
-        return 1
+    ok, app = _import_urdf(paths["urdf"], paths["geometry"], args)
+    if ok:
+        print(f"  geometry imported: {paths['geometry']} ({paths['geometry'].stat().st_size} bytes)", flush=True)
+        _write_material_template(paths)
+        _write_root_composition(paths)
+        validate_ok = _validate_output(paths)
+        if validate_ok:
+            print("done: Asset Structure 3.0 output complete", flush=True)
+            print(f"  root:     {paths['root']}", flush=True)
+            print(f"  geometry: {paths['geometry']}", flush=True)
+            print(f"  material: {paths['material']}", flush=True)
+            print(f"  textures: {paths['textures']}/", flush=True)
+    else:
+        print(f"error: URDF import did not produce {paths['geometry']}", file=sys.stderr, flush=True)
+        validate_ok = False
 
-    _write_material_template(paths)
-    _write_root_composition(paths)
-
-    if not _validate_output(paths):
-        return 1
-
-    print("done: Asset Structure 3.0 output complete")
-    print(f"  root:     {paths['root']}")
-    print(f"  geometry: {paths['geometry']}")
-    print(f"  material: {paths['material']}")
-    print(f"  textures: {paths['textures']}/")
-    return 0
+    app.close()
+    return 0 if (ok and validate_ok) else 1
 
 
 if __name__ == "__main__":

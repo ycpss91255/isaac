@@ -182,6 +182,75 @@ class TestWriteRootComposition:
         assert "@./r_material.usda@" in content
 
 
+class TestPreprocessUrdf:
+    def test_resolves_package_uri_to_absolute(self, tmp_path):
+        urdf_dir = tmp_path / "robot" / "openbase"
+        urdf_dir.mkdir(parents=True)
+        mesh_dir = urdf_dir / "mesh"
+        mesh_dir.mkdir()
+        (mesh_dir / "base.stl").write_text("fake stl")
+
+        urdf = urdf_dir / "openbase.urdf"
+        urdf.write_text(
+            '<robot name="x"><mesh filename="package://open_base/mesh/base.stl"/></robot>'
+        )
+
+        resolved = import_model._preprocess_urdf(urdf)
+        try:
+            content = resolved.read_text()
+            assert "package://" not in content
+            assert str(mesh_dir / "base.stl") in content
+        finally:
+            resolved.unlink()
+
+    def test_leaves_unresolvable_uri_unchanged(self, tmp_path):
+        urdf_dir = tmp_path / "robot" / "openbase"
+        urdf_dir.mkdir(parents=True)
+        urdf = urdf_dir / "openbase.urdf"
+        urdf.write_text(
+            '<robot name="x"><mesh filename="package://x/missing.stl"/></robot>'
+        )
+
+        resolved = import_model._preprocess_urdf(urdf)
+        try:
+            content = resolved.read_text()
+            assert "package://x/missing.stl" in content
+        finally:
+            resolved.unlink()
+
+    def test_resolves_parent_dir_fallback(self, tmp_path):
+        urdf_dir = tmp_path / "robot" / "openbase"
+        urdf_dir.mkdir(parents=True)
+        parent_mesh = tmp_path / "robot" / "mesh"
+        parent_mesh.mkdir()
+        (parent_mesh / "wheel.stl").write_text("fake stl")
+
+        urdf = urdf_dir / "openbase.urdf"
+        urdf.write_text(
+            '<robot name="x"><mesh filename="package://open_base/mesh/wheel.stl"/></robot>'
+        )
+
+        resolved = import_model._preprocess_urdf(urdf)
+        try:
+            content = resolved.read_text()
+            assert str(parent_mesh / "wheel.stl") in content
+        finally:
+            resolved.unlink()
+
+    def test_writes_to_tmp(self, tmp_path):
+        urdf_dir = tmp_path / "robot" / "openbase"
+        urdf_dir.mkdir(parents=True)
+        urdf = urdf_dir / "openbase.urdf"
+        urdf.write_text("<robot/>")
+
+        resolved = import_model._preprocess_urdf(urdf)
+        try:
+            assert str(resolved).startswith("/tmp/")
+            assert resolved.suffix == ".urdf"
+        finally:
+            resolved.unlink()
+
+
 class TestValidateOutput:
     def test_passes_when_all_exist(self, tmp_model):
         out_dir = tmp_model["out_dir"]
